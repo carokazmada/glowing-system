@@ -1,17 +1,46 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 dotenv.config();
 
-const app = express();
-app.use(express.json());
+export const app = express();
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Conserver le corps brut permet de vérifier que les événements viennent bien de Meta.
+app.use(express.json({
+  limit: '2mb',
+  verify: (req, _res, buffer) => {
+    req.rawBody = buffer;
+  },
+}));
 
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const APP_SECRET = process.env.APP_SECRET;
 const GRAPH_API_VERSION = 'v19.0';
+let openaiClient;
+
+function getOpenAI() {
+  openaiClient ??= new OpenAI({ apiKey: requireEnv('OPENAI_API_KEY') });
+  return openaiClient;
+}
+
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) throw new Error(`La variable d'environnement ${name} est requise`);
+  return value;
+}
+
+function hasValidMetaSignature(req) {
+  if (!APP_SECRET) return process.env.NODE_ENV !== 'production';
+  const signature = req.get('x-hub-signature-256');
+  if (!signature?.startsWith('sha256=') || !req.rawBody) return false;
+  const expected = `sha256=${crypto.createHmac('sha256', APP_SECRET).update(req.rawBody).digest('hex')}`;
+  const received = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  return received.length === expectedBuffer.length && crypto.timingSafeEqual(received, expectedBuffer);
+}
 
 // Mémoire de conversation simple en RAM (par utilisateur).
 // ⚠️ Se réinitialise si le serveur redémarre. Pour la production à long terme,
@@ -47,6 +76,10 @@ app.get('/webhook', (req, res) => {
 // 2. Réception des messages Messenger (requête POST)
 // ============================================================
 app.post('/webhook', (req, res) => {
+  if (!hasValidMetaSignature(req)) {
+    console.warn('Signature Meta absente ou invalide');
+    return res.sendStatus(401);
+  }
   // On répond tout de suite à Meta pour éviter un timeout,
   // le traitement réel se fait juste après, en arrière-plan.
   res.status(200).send('EVENT_RECEIVED');
@@ -110,10 +143,11 @@ async function handleMessagingEvent(event) {
 // ============================================================
 async function transcribeAudio(audioUrl) {
   const response = await fetch(audioUrl);
+  if (!response.ok) throw new Error(`Téléchargement audio impossible (${response.status})`);
   const arrayBuffer = await response.arrayBuffer();
   const audioFile = new File([arrayBuffer], 'audio.mp4', { type: 'audio/mp4' });
 
-  const transcription = await openai.audio.transcriptions.create({
+  const transcription = await getOpenAI().audio.transcriptions.create({
     file: audioFile,
     model: 'whisper-1',
     language: 'fr',
@@ -135,12 +169,13 @@ async function generateReply(senderId, userText) {
   // On garde seulement les derniers échanges pour limiter les coûts/tokens
   const trimmedHistory = [history[0], ...history.slice(-10)];
 
-  const completion = await openai.chat.completions.create({
+  const completion = await getOpenAI().chat.completions.create({
     model: 'gpt-4o-mini',
     messages: trimmedHistory,
   });
 
-  const reply = completion.choices[0].message.content;
+  const reply = completion.choices[0]?.message?.content?.trim();
+  if (!reply) throw new Error("OpenAI n'a renvoyé aucune réponse");
   history.push({ role: 'assistant', content: reply });
 
   return reply;
@@ -151,7 +186,7 @@ async function generateReply(senderId, userText) {
 // ============================================================
 async function sendVoiceReply(senderId, text) {
   try {
-    const speech = await openai.audio.speech.create({
+    const speech = await getOpenAI().audio.speech.create({
       model: 'tts-1',
       voice: 'alloy',
       input: text,
@@ -175,7 +210,7 @@ async function sendVoiceReply(senderId, text) {
     formData.append('filedata', audioBlob, 'reply.mp3');
 
     const res = await fetch(
-      `https://graph.facebook.com/${GRAPH_API_VERSION}/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/me/messages?access_token=${requireEnv('PAGE_ACCESS_TOKEN')}`,
       { method: 'POST', body: formData }
     );
 
@@ -194,8 +229,8 @@ async function sendVoiceReply(senderId, text) {
 // Envoi d'un message texte simple (repli / secours)
 // ============================================================
 async function sendTextMessage(senderId, text) {
-  await fetch(
-    `https://graph.facebook.com/${GRAPH_API_VERSION}/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+  const response = await fetch(
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/me/messages?access_token=${requireEnv('PAGE_ACCESS_TOKEN')}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -205,10 +240,14 @@ async function sendTextMessage(senderId, text) {
       }),
     }
   );
+  if (!response.ok) throw new Error(`Envoi Messenger impossible (${response.status}): ${await response.text()}`);
 }
 
 // Page de test pour vérifier que le serveur tourne
-app.get('/', (req, res) => res.send('✅ Carokaz Mada Messenger Voicebot est en ligne'));
+app.get('/', (_req, res) => res.send('✅ Carokaz Mada Messenger Voicebot est en ligne'));
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Serveur démarré sur le port ${PORT}`));
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  app.listen(PORT, () => console.log(`🚀 Serveur démarré sur le port ${PORT}`));
+}

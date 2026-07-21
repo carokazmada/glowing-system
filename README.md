@@ -18,6 +18,7 @@ Ce projet fait fonctionner un assistant qui reçoit les **notes vocales** des cl
 5. Dans l'onglet **Environment**, ajoute ces variables (les mêmes que dans `.env.example`) :
    - `PAGE_ACCESS_TOKEN`
    - `VERIFY_TOKEN`
+   - `APP_SECRET` (secret de l'application Meta, obligatoire en production)
    - `OPENAI_API_KEY`
    - `SYSTEM_PROMPT` (optionnel)
 6. Clique **Create Web Service**. Render te donne une URL du type :
@@ -91,3 +92,13 @@ Si un client veut commander, demande-lui son nom, son numéro, et son adresse de
 ---
 
 Si tu bloques sur une étape (vérification du webhook qui échoue, token invalide, etc.), montre-moi le message d'erreur exact et je t'aiderai à le résoudre.
+
+## Développement local
+
+```bash
+cp .env.example .env
+npm install
+npm start
+```
+
+Le serveur expose `GET /health` pour les sondes de disponibilité. En production, il refuse les événements webhook dont la signature `X-Hub-Signature-256` ne correspond pas à `APP_SECRET`.
