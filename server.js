@@ -6,10 +6,22 @@ import OpenAI from 'openai';
 dotenv.config();
 
 const app = express();
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
 const MAX_JSON_BYTES = '1mb';
 const MAX_TEXT_CHARS = 2000;
+const MAX_REPLY_CHARS = 1500;
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const AUDIO_TIMEOUT_MS = 15_000;
+const MAX_EVENTS_PER_REQUEST = 25;
+const MAX_TRACKED_MESSAGES = 10_000;
+const MAX_CONVERSATIONS = 10_000;
 
 app.use(express.json({
   limit: MAX_JSON_BYTES,
@@ -25,7 +37,12 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const META_APP_SECRET = process.env.META_APP_SECRET;
+const PAGE_ID = process.env.PAGE_ID;
 const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || 'v21.0';
+
+if (!PAGE_ACCESS_TOKEN || !VERIFY_TOKEN || !META_APP_SECRET) {
+  console.error('Configuration Meta incomplète : le webhook restera fermé jusqu’à configuration des secrets requis.');
+}
 
 function verifyMetaSignature(req) {
   const signature = req.get('x-hub-signature-256');
@@ -68,6 +85,9 @@ function isDuplicateMessage(messageId) {
   }
   if (processedMessages.has(messageId)) return true;
   processedMessages.set(messageId, now);
+  while (processedMessages.size > MAX_TRACKED_MESSAGES) {
+    processedMessages.delete(processedMessages.keys().next().value);
+  }
   return false;
 }
 
@@ -114,15 +134,20 @@ app.post('/webhook', (req, res) => {
   res.status(200).send('EVENT_RECEIVED');
 
   const body = req.body;
-  if (body.object !== 'page') return;
+  if (body.object !== 'page' || !Array.isArray(body.entry)) return;
 
-  for (const entry of body.entry || []) {
-    for (const event of entry.messaging || []) {
-      if (isDuplicateMessage(event.message?.mid)) continue;
-      handleMessagingEvent(event).catch((err) => {
-        console.error('Erreur traitement message:', err);
-      });
-    }
+  const events = body.entry.flatMap((entry) => Array.isArray(entry.messaging) ? entry.messaging : []);
+  if (events.length > MAX_EVENTS_PER_REQUEST) {
+    console.warn(`Webhook Meta rejeté : trop d’événements (${events.length})`);
+    return;
+  }
+
+  for (const event of events) {
+    if (PAGE_ID && event.recipient?.id !== PAGE_ID) continue;
+    if (isDuplicateMessage(event.message?.mid)) continue;
+    handleMessagingEvent(event).catch((err) => {
+      console.error('Erreur traitement message:', err?.message || 'erreur inconnue');
+    });
   }
 });
 
@@ -208,6 +233,9 @@ async function transcribeAudio(audioUrl) {
 // ============================================================
 async function generateReply(senderId, userText) {
   if (!conversations.has(senderId)) {
+    if (conversations.size >= MAX_CONVERSATIONS) {
+      conversations.delete(conversations.keys().next().value);
+    }
     conversations.set(senderId, [{ role: 'system', content: SYSTEM_PROMPT }]);
   }
   const history = conversations.get(senderId);
@@ -221,7 +249,7 @@ async function generateReply(senderId, userText) {
     messages: trimmedHistory,
   });
 
-  const reply = completion.choices[0].message.content;
+  const reply = String(completion.choices[0].message.content || '').slice(0, MAX_REPLY_CHARS);
   history.push({ role: 'assistant', content: reply });
   if (history.length > 21) history.splice(1, history.length - 21);
 
