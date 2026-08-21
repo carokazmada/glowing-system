@@ -1,0 +1,15 @@
+# Secrets et configuration locale
+.env
+.env.*
+!.env.example
+
+# Dépendances et artefacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Journaux et fichiers temporaires
+logs/
+*.log
+.DS_Store

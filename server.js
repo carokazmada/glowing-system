@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
@@ -5,13 +6,90 @@ import OpenAI from 'openai';
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
+const MAX_JSON_BYTES = '1mb';
+const MAX_TEXT_CHARS = 2000;
+const MAX_REPLY_CHARS = 1500;
+const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
+const AUDIO_TIMEOUT_MS = 15_000;
+const MAX_EVENTS_PER_REQUEST = 25;
+const MAX_TRACKED_MESSAGES = 10_000;
+const MAX_CONVERSATIONS = 10_000;
+
+app.use(express.json({
+  limit: MAX_JSON_BYTES,
+  verify: (req, _res, buf) => {
+    if (req.method === 'POST' && req.path === '/webhook') {
+      req.rawBody = Buffer.from(buf);
+    }
+  },
+}));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-const GRAPH_API_VERSION = 'v19.0';
+const META_APP_SECRET = process.env.META_APP_SECRET;
+const PAGE_ID = process.env.PAGE_ID;
+const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || 'v21.0';
+
+if (!PAGE_ACCESS_TOKEN || !VERIFY_TOKEN || !META_APP_SECRET) {
+  console.error('Configuration Meta incomplète : le webhook restera fermé jusqu’à configuration des secrets requis.');
+}
+
+function verifyMetaSignature(req) {
+  const signature = req.get('x-hub-signature-256');
+  if (!META_APP_SECRET || !signature?.startsWith('sha256=') || !req.rawBody) return false;
+  const received = signature.slice('sha256='.length);
+  if (!/^[a-f0-9]{64}$/i.test(received)) return false;
+  const expected = crypto.createHmac('sha256', META_APP_SECRET).update(req.rawBody).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(received, 'hex'), Buffer.from(expected, 'hex'));
+}
+
+async function readLimitedResponse(response, maxBytes) {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new Error('Audio file exceeds the maximum allowed size');
+  }
+  if (!response.body) throw new Error('Audio response has no body');
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error('Audio file exceeds the maximum allowed size');
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total);
+}
+
+const processedMessages = new Map();
+const MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
+function isDuplicateMessage(messageId) {
+  if (!messageId) return false;
+  const now = Date.now();
+  for (const [id, timestamp] of processedMessages) {
+    if (now - timestamp > MESSAGE_DEDUP_TTL_MS) processedMessages.delete(id);
+  }
+  if (processedMessages.has(messageId)) return true;
+  processedMessages.set(messageId, now);
+  while (processedMessages.size > MAX_TRACKED_MESSAGES) {
+    processedMessages.delete(processedMessages.keys().next().value);
+  }
+  return false;
+}
 
 // Mémoire de conversation simple en RAM (par utilisateur).
 // ⚠️ Se réinitialise si le serveur redémarre. Pour la production à long terme,
@@ -47,19 +125,29 @@ app.get('/webhook', (req, res) => {
 // 2. Réception des messages Messenger (requête POST)
 // ============================================================
 app.post('/webhook', (req, res) => {
-  // On répond tout de suite à Meta pour éviter un timeout,
-  // le traitement réel se fait juste après, en arrière-plan.
+  if (!verifyMetaSignature(req)) {
+    console.warn('Webhook Meta rejeté : signature absente ou invalide');
+    return res.sendStatus(403);
+  }
+
+  // Réponse rapide à Meta après authentification cryptographique du payload.
   res.status(200).send('EVENT_RECEIVED');
 
   const body = req.body;
-  if (body.object !== 'page') return;
+  if (body.object !== 'page' || !Array.isArray(body.entry)) return;
 
-  for (const entry of body.entry || []) {
-    for (const event of entry.messaging || []) {
-      handleMessagingEvent(event).catch((err) => {
-        console.error('Erreur traitement message:', err);
-      });
-    }
+  const events = body.entry.flatMap((entry) => Array.isArray(entry.messaging) ? entry.messaging : []);
+  if (events.length > MAX_EVENTS_PER_REQUEST) {
+    console.warn(`Webhook Meta rejeté : trop d’événements (${events.length})`);
+    return;
+  }
+
+  for (const event of events) {
+    if (PAGE_ID && event.recipient?.id !== PAGE_ID) continue;
+    if (isDuplicateMessage(event.message?.mid)) continue;
+    handleMessagingEvent(event).catch((err) => {
+      console.error('Erreur traitement message:', err?.message || 'erreur inconnue');
+    });
   }
 });
 
@@ -75,7 +163,7 @@ async function handleMessagingEvent(event) {
   if (audioAttachment?.payload?.url) {
     try {
       userText = await transcribeAudio(audioAttachment.payload.url);
-      console.log(`🎤 Transcription: "${userText}"`);
+      console.log(`Transcription audio reçue (${userText.length} caractères)`);
     } catch (err) {
       console.error('Erreur transcription audio:', err);
       await sendTextMessage(
@@ -87,7 +175,7 @@ async function handleMessagingEvent(event) {
   }
   // Cas 2 : message texte classique
   else if (event.message.text) {
-    userText = event.message.text;
+    userText = event.message.text.slice(0, MAX_TEXT_CHARS);
   }
 
   if (!userText) {
@@ -109,9 +197,27 @@ async function handleMessagingEvent(event) {
 // Transcription audio (Speech-to-Text via OpenAI Whisper)
 // ============================================================
 async function transcribeAudio(audioUrl) {
-  const response = await fetch(audioUrl);
-  const arrayBuffer = await response.arrayBuffer();
-  const audioFile = new File([arrayBuffer], 'audio.mp4', { type: 'audio/mp4' });
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(audioUrl);
+  } catch {
+    throw new Error('Invalid audio URL');
+  }
+  if (parsedUrl.protocol !== 'https:') throw new Error('Audio URL must use HTTPS');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AUDIO_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(parsedUrl, { signal: controller.signal, redirect: 'error' });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) throw new Error(`Audio download failed with HTTP ${response.status}`);
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.startsWith('audio/')) throw new Error('Attachment is not an audio response');
+  const audioBuffer = await readLimitedResponse(response, MAX_AUDIO_BYTES);
+  const audioFile = new File([audioBuffer], 'audio.mp4', { type: contentType });
 
   const transcription = await openai.audio.transcriptions.create({
     file: audioFile,
@@ -127,6 +233,9 @@ async function transcribeAudio(audioUrl) {
 // ============================================================
 async function generateReply(senderId, userText) {
   if (!conversations.has(senderId)) {
+    if (conversations.size >= MAX_CONVERSATIONS) {
+      conversations.delete(conversations.keys().next().value);
+    }
     conversations.set(senderId, [{ role: 'system', content: SYSTEM_PROMPT }]);
   }
   const history = conversations.get(senderId);
@@ -140,8 +249,9 @@ async function generateReply(senderId, userText) {
     messages: trimmedHistory,
   });
 
-  const reply = completion.choices[0].message.content;
+  const reply = String(completion.choices[0].message.content || '').slice(0, MAX_REPLY_CHARS);
   history.push({ role: 'assistant', content: reply });
+  if (history.length > 21) history.splice(1, history.length - 21);
 
   return reply;
 }
@@ -175,8 +285,12 @@ async function sendVoiceReply(senderId, text) {
     formData.append('filedata', audioBlob, 'reply.mp3');
 
     const res = await fetch(
-      `https://graph.facebook.com/${GRAPH_API_VERSION}/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
-      { method: 'POST', body: formData }
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/me/messages`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${PAGE_ACCESS_TOKEN}` },
+        body: formData,
+      }
     );
 
     if (!res.ok) {
@@ -195,10 +309,13 @@ async function sendVoiceReply(senderId, text) {
 // ============================================================
 async function sendTextMessage(senderId, text) {
   await fetch(
-    `https://graph.facebook.com/${GRAPH_API_VERSION}/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/me/messages`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${PAGE_ACCESS_TOKEN}`,
+      },
       body: JSON.stringify({
         recipient: { id: senderId },
         message: { text },
