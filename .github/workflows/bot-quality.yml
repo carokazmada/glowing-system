@@ -1,0 +1,44 @@
+name: Qualité de l’assistant Messenger
+
+on:
+  pull_request:
+    paths:
+      - 'server.js'
+      - 'package.json'
+      - '.env.example'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'server.js'
+      - 'package.json'
+      - '.env.example'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-bot:
+    name: Vérifier le service conversationnel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Vérifier la syntaxe JavaScript
+        run: node --check server.js
+      - name: Vérifier le contrat de configuration
+        run: |
+          grep -q 'PAGE_ACCESS_TOKEN' .env.example
+          grep -q 'VERIFY_TOKEN' .env.example
+          grep -q 'OPENAI_API_KEY' .env.example
+          grep -q 'SYSTEM_PROMPT' .env.example
+      - name: Vérifier le contrat de santé
+        run: |
+          grep -q "app.get('/'," server.js
+          grep -q "app.post('/webhook'" server.js
+          grep -q 'sendTextMessage' server.js
