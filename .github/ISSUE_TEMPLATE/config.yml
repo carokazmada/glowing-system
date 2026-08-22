@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Pilotage Carokaz Ecosystem OS
+    url: https://github.com/carokazmada/carokaz-ecosystem-os
+    about: Créez les initiatives, demandes SEO, actions catalogue et incidents transverses dans le référentiel central.
+  - name: Contrôles de qualité
+    url: https://github.com/carokazmada/carokaz-ecosystem-os/blob/main/docs/QUALITY_GATES.md
+    about: Vérifiez les exigences applicables avant de soumettre une demande de modification.
