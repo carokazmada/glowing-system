@@ -1,0 +1,5 @@
+# Revue obligatoire pour tout changement du bot et de sa CI.
+* @carokazmada
+.github/ @carokazmada
+server.js @carokazmada
+.env.example @carokazmada
