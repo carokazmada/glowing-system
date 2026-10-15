@@ -1,16 +1,25 @@
 import express from 'express';
+import { verifyMetaWebhookSignature } from './webhook-signature.js';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, rawBody) => {
+    // Preserve raw bytes: re-serializing JSON would invalidate Meta's signature.
+    if (req.method === 'POST' && req.path === '/webhook') {
+      req.rawBody = Buffer.from(rawBody);
+    }
+  },
+}));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const META_APP_SECRET = process.env.META_APP_SECRET;
 const GRAPH_API_VERSION = 'v19.0';
 
 // Mémoire de conversation simple en RAM (par utilisateur).
@@ -34,7 +43,7 @@ app.get('/webhook', (req, res) => {
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+  if (mode === 'subscribe' && typeof VERIFY_TOKEN === 'string' && VERIFY_TOKEN.length > 0 && token === VERIFY_TOKEN) {
     console.log('✅ Webhook vérifié avec succès par Meta');
     res.status(200).send(challenge);
   } else {
@@ -47,6 +56,16 @@ app.get('/webhook', (req, res) => {
 // 2. Réception des messages Messenger (requête POST)
 // ============================================================
 app.post('/webhook', (req, res) => {
+  // Never accept an unauthenticated event. Configure META_APP_SECRET before deployment.
+  if (!META_APP_SECRET) {
+    console.error('Meta webhook cannot be verified: META_APP_SECRET is not configured');
+    return res.sendStatus(503);
+  }
+
+  if (!verifyMetaWebhookSignature(req.rawBody, req.get('x-hub-signature-256'), META_APP_SECRET)) {
+    return res.sendStatus(403);
+  }
+
   // On répond tout de suite à Meta pour éviter un timeout,
   // le traitement réel se fait juste après, en arrière-plan.
   res.status(200).send('EVENT_RECEIVED');
@@ -75,7 +94,7 @@ async function handleMessagingEvent(event) {
   if (audioAttachment?.payload?.url) {
     try {
       userText = await transcribeAudio(audioAttachment.payload.url);
-      console.log(`🎤 Transcription: "${userText}"`);
+      console.log('🎤 Note vocale transcrite avec succès');
     } catch (err) {
       console.error('Erreur transcription audio:', err);
       await sendTextMessage(
