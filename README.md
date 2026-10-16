@@ -1,5 +1,10 @@
 # Carokaz Mada — Chatbot vocal Messenger 🎙️
 
+**Accès fermés par défaut :** le bot reste en pause et le serveur écoute uniquement
+en local. Lire [SECURITY.md](SECURITY.md) avant de déployer ou de réactiver
+volontairement le webhook. Les étapes ci-dessous décrivent le fonctionnement
+après cette réactivation.
+
 Ce projet fait fonctionner un assistant qui reçoit les **notes vocales** des clients sur ta page Facebook Messenger, comprend ce qu'ils disent, et répond aussi **en note vocale** (avec un repli automatique en texte si jamais la voix échoue).
 
 ---

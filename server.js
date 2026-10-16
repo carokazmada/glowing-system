@@ -1,13 +1,17 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
+import { accessConfig, accessGate, verifyWebhookBody } from './security.js';
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+const access = accessConfig(process.env);
+app.disable('x-powered-by');
+app.use(accessGate(access.enabled));
+app.use(express.json({ limit: '256kb', inflate: false, verify: verifyWebhookBody(access.appSecret) }));
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = access.enabled ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -34,9 +38,9 @@ app.get('/webhook', (req, res) => {
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+  if (mode === 'subscribe' && typeof token === 'string' && token === VERIFY_TOKEN && typeof challenge === 'string') {
     console.log('✅ Webhook vérifié avec succès par Meta');
-    res.status(200).send(challenge);
+    res.status(200).type('text/plain').send(challenge);
   } else {
     console.log('❌ Échec de vérification du webhook');
     res.sendStatus(403);
@@ -47,6 +51,9 @@ app.get('/webhook', (req, res) => {
 // 2. Réception des messages Messenger (requête POST)
 // ============================================================
 app.post('/webhook', (req, res) => {
+  if (!req.is('application/json') || req.body?.object !== 'page' || !Array.isArray(req.body.entry)) {
+    return res.sendStatus(400);
+  }
   // On répond tout de suite à Meta pour éviter un timeout,
   // le traitement réel se fait juste après, en arrière-plan.
   res.status(200).send('EVENT_RECEIVED');
@@ -207,8 +214,11 @@ async function sendTextMessage(senderId, text) {
   );
 }
 
-// Page de test pour vérifier que le serveur tourne
-app.get('/', (req, res) => res.send('✅ Carokaz Mada Messenger Voicebot est en ligne'));
+// Réponses génériques : aucune trace interne ni secret dans les erreurs HTTP.
+app.use((err, req, res, next) => {
+  const status = [400, 403, 413, 415].includes(err.status) ? err.status : 500;
+  res.sendStatus(status);
+});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Serveur démarré sur le port ${PORT}`));
+app.listen(PORT, access.host, () => console.log(`Serveur démarré ; accès ${access.enabled ? 'Meta uniquement' : 'désactivés'}`));
