@@ -1,0 +1,12 @@
+# Secrets — ne jamais committer
+.env
+.env.*
+!.env.example
+
+# Dépendances
+node_modules/
+
+# Journaux et fichiers temporaires
+*.log
+npm-debug.log*
+.DS_Store
