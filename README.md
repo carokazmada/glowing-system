@@ -1,5 +1,10 @@
 # Carokaz Mada — Chatbot vocal Messenger 🎙️
 
+**Accès fermés par défaut :** le bot reste en pause et le serveur écoute uniquement
+en local. Lire [SECURITY.md](SECURITY.md) avant de déployer ou de réactiver
+volontairement le webhook. Les étapes ci-dessous décrivent le fonctionnement
+après cette réactivation.
+
 Ce projet fait fonctionner un assistant qui reçoit les **notes vocales** des clients sur ta page Facebook Messenger, comprend ce qu'ils disent, et répond aussi **en note vocale** (avec un repli automatique en texte si jamais la voix échoue).
 
 ---
@@ -84,9 +89,22 @@ Si un client veut commander, demande-lui son nom, son numéro, et son adresse de
 
 ## 7. Limites actuelles (à connaître)
 
-- L'historique de conversation est gardé en mémoire (RAM) : si le serveur redémarre, l'historique des conversations en cours est perdu (mais les clients peuvent recommencer à écrire normalement).
+- L'historique de conversation est gardé en mémoire (RAM) : si le serveur redémarre, l'historique des conversations en cours est perdu (mais les clients peuvent recommencer à écrire normalement). La mémoire est bornée et les doublons de livraison Meta sont ignorés.
 - Pas encore de base de données pour stocker les commandes/clients — si tu veux ça plus tard, on pourra l'ajouter.
 - Le bot répond en français par défaut pour la transcription ; il peut comprendre le malgache aussi en général, mais la précision peut varier.
+
+---
+
+## 8. Structure du code et tests
+
+- `server.js` — démarrage uniquement (configuration, écoute, nettoyage périodique).
+- `app.js` — fabrique Express (`createApp`), testable sans ouvrir de port.
+- `webhook-events.js` — validation de charge utile, déduplication, extraction du texte.
+- `security.js` — contrôle d'accès, vérification de signature HMAC, en-têtes de sécurité.
+- `connectors.js` — appels HTTP bornés (délais, redirections, taille, hôtes autorisés).
+- `transient-store.js` / `work-queue.js` — mémoires bornées et file de traitement.
+
+Exécuter les tests : `npm install` puis `npm test` (aucun secret ni accès réseau requis).
 
 ---
 
