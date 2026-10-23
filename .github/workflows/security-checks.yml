@@ -23,12 +23,16 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
-      - name: Security and connector tests (no secrets or dependencies required)
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Security and connector tests
         run: node --test test/*.test.js
       - name: Syntax checks
         run: |
           node --check server.js
+          node --check app.js
           node --check security.js
           node --check connectors.js
+          node --check webhook-events.js
           node --check transient-store.js
           node --check work-queue.js
