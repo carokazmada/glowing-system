@@ -23,7 +23,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
-      - name: Security and connector tests (no secrets or dependencies required)
+      - name: Install dependencies from lockfile (reproducible, no install scripts)
+        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Audit dependencies for known vulnerabilities
+        run: npm audit --audit-level=high
+      - name: Security and connector tests (no secrets required)
         run: node --test test/*.test.js
       - name: Syntax checks
         run: |
