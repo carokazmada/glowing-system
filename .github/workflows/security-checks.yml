@@ -36,3 +36,5 @@ jobs:
           node --check connectors.js
           node --check transient-store.js
           node --check work-queue.js
+      - name: Functional webhook verification (lockdown, HMAC, headers)
+        run: bash scripts/verify-webhook.sh
