@@ -1,0 +1,10 @@
+# Never commit runtime credentials
+.env
+.env.*
+!.env.example
+
+# Local dependencies and logs
+node_modules/
+*.log
+npm-debug.log*
+.DS_Store

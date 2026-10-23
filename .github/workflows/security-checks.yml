@@ -1,0 +1,40 @@
+name: Security checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, security/sanitize-env-example-20261016]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: Install dependencies from lockfile (reproducible, no install scripts)
+        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Audit dependencies for known vulnerabilities
+        run: npm audit --audit-level=high
+      - name: Security and connector tests (no secrets required)
+        run: node --test test/*.test.js
+      - name: Syntax checks
+        run: |
+          node --check server.js
+          node --check security.js
+          node --check connectors.js
+          node --check transient-store.js
+          node --check work-queue.js
+      - name: Functional webhook verification (lockdown, HMAC, headers)
+        run: bash scripts/verify-webhook.sh
