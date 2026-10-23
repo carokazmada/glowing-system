@@ -21,10 +21,18 @@ Ce projet fait fonctionner un assistant qui reçoit les **notes vocales** des cl
    - **Start Command** : `npm start`
    - **Plan** : Free pour tester (passe en payant ~7$/mois quand tu mets en production, pour que le bot ne "s'endorme" jamais)
 5. Dans l'onglet **Environment**, ajoute ces variables (les mêmes que dans `.env.example`) :
+   - `PUBLIC_ACCESS_ENABLED` — mettre **`true`** pour activer le service. Sans cette
+     valeur, le serveur démarre en pause et répond `403` à tout.
+   - `META_APP_SECRET` — le **App Secret** de ton App Meta (Meta for Developers →
+     ton App → Paramètres → Général). Obligatoire : sans lui, le webhook refuse
+     toutes les requêtes (`503`), car il ne peut pas vérifier les signatures.
    - `PAGE_ACCESS_TOKEN`
    - `VERIFY_TOKEN`
    - `OPENAI_API_KEY`
    - `SYSTEM_PROMPT` (optionnel)
+
+   ⚠️ `META_APP_SECRET` n'est **pas** `VERIFY_TOKEN` ni `PAGE_ACCESS_TOKEN` : ce sont
+   trois valeurs différentes. Ne mets jamais un secret dans un fichier du dépôt.
 6. Clique **Create Web Service**. Render te donne une URL du type :
    `https://carokaz-messenger-bot.onrender.com`
 
